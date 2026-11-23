@@ -22,6 +22,7 @@ import yaml
 from codemie_sdk.models.workflow import WorkflowMode
 from hamcrest import assert_that, greater_than
 
+from codemie_test_harness.tests.test_data.workflow_icon_test_data import write_png_icon
 from codemie_test_harness.tests.ui import conversation_ids
 from codemie_test_harness.tests.ui.pageobject.chats.chat_page import ChatPage
 from codemie_test_harness.tests.ui.pageobject.login_page import LoginPage
@@ -700,3 +701,62 @@ def graph_workflow(workflow_factory):
         return GraphWorkflow(stored, [state["id"] for state in stored_states])
 
     return _create
+
+
+@pytest.fixture
+def ui_workflow_name(cleanup_generated_workflow):
+    """A fresh workflow name for a workflow the test creates through the UI.
+
+    The name is tracked by ``cleanup_generated_workflow``, so the workflow is deleted in
+    teardown also when the test failed before or after the save.
+    """
+    name = get_random_name()
+    cleanup_generated_workflow(name)
+    return name
+
+
+@pytest.fixture
+def workflow_with_icon(workflow_utils, default_llm, tmp_path):
+    """A workflow created through the API with an uploaded PNG icon; deleted in teardown."""
+    icon_url = workflow_utils.upload_workflow_icon(write_png_icon(tmp_path))
+    created_workflow = workflow_utils.create_workflow(
+        workflow_name=get_random_name(),
+        workflow_type=WorkflowMode.SEQUENTIAL,
+        shared=True,
+        workflow_yaml=build_simple_assistant_workflow_yaml(default_llm.base_name),
+        icon_url=icon_url,
+    )
+    workflow = workflow_utils.get_workflow(created_workflow.id)
+    yield workflow
+    try:
+        workflow_utils.delete_workflow(workflow)
+    except Exception as e:
+        logger.warning(f"Failed to delete workflow {workflow.id}: {e}")
+
+
+@pytest.fixture
+def workflow_conversation_id(workflow_with_icon, conversation_utils, workflow_utils):
+    """Id of a workflow conversation of ``workflow_with_icon`` that has a started chat.
+
+    The sidebar lists a workflow conversation only after a message was sent in it: a
+    conversation created with no message carries no workflow flag. The conversation is
+    created through the API and one execution is run in it, the way the API chat-mode tests
+    do (``test_workflow_execution_deletion.py``). The workflow is a single-assistant one, so
+    the run is one LLM call. Deleting the workflow in the ``workflow_with_icon`` teardown
+    deletes its conversations; the conversation is also deleted here, best effort.
+    """
+    conversation = conversation_utils.create_conversation(
+        initial_assistant_id=workflow_with_icon.id,
+        is_workflow_conversation=True,
+    )
+    conversation_id = conversation["id"]
+    workflow_utils.create_workflow_execution(
+        workflow_id=workflow_with_icon.id,
+        user_input="Say hello",
+        conversation_id=conversation_id,
+    )
+    yield conversation_id
+    try:
+        conversation_utils.delete_conversation(conversation_id)
+    except Exception as e:
+        logger.warning(f"Failed to delete conversation {conversation_id}: {e}")
