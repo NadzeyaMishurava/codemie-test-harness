@@ -466,3 +466,9 @@ class ProjectModal(BasePage):
         expect(self.edit_dialog).to_be_visible()
         expect(self.enforce_switch).to_have_count(0)
         return self
+
+    @step
+    def should_not_have_edit_dialog(self):
+        """Verify no Edit Project dialog is open (nor, therefore, an enforcement switch)."""
+        expect(self.edit_dialog).to_have_count(0)
+        return self

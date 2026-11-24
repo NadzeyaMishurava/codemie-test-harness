@@ -40,6 +40,12 @@ from codemie_test_harness.tests.ui.pageobject.administration.enforcement_confirm
 from codemie_test_harness.tests.ui.pageobject.administration.project_details_page import (
     ProjectDetailsPage,
 )
+from codemie_test_harness.tests.ui.pageobject.administration.project_management_page import (
+    ProjectManagementPage,
+)
+from codemie_test_harness.tests.ui.pageobject.administration.project_modal_page import (
+    ProjectModal,
+)
 from codemie_test_harness.tests.ui.test_data.project_enforcement_test_data import (
     DESCRIPTION_SUFFIX,
     ENFORCEMENT_FIELD,
@@ -68,6 +74,14 @@ AS_GLOBAL_OR_PROJECT_ADMIN = pytest.mark.parametrize(
 )
 AS_PROJECT_ADMIN = pytest.mark.parametrize(
     "acting_credentials", [PROJECT_ADMIN], indirect=True
+)
+AS_MEMBER = pytest.mark.parametrize(
+    "acting_credentials", [pytest.param("cli_member", id="member")], indirect=True
+)
+AS_OTHER_PROJECT_ADMIN = pytest.mark.parametrize(
+    "acting_credentials",
+    [pytest.param("cli_other_project_admin", id="other project admin")],
+    indirect=True,
 )
 AS_GLOBAL_ADMIN = pytest.mark.parametrize(
     "acting_credentials", [GLOBAL_ADMIN], indirect=True
@@ -339,3 +353,42 @@ def test_failed_confirmed_save_stores_nothing_and_retry_asks_again(
     assert_that(
         _enforcement(project_utils, project), is_(True), "the retry stores the change"
     )
+
+
+# ── Users without rights over the project cannot reach its editing ─────────────────
+# Edit Project is the only place with the enforcement switch. For these users it is not
+# offered at all, so the switch is unreachable; the tests assert that, and nothing forces
+# the dialog open.
+
+
+@AS_MEMBER
+def test_project_member_cannot_open_edit_project(page, cli_ui_world):
+    """A plain member sees the project but is offered neither 'Edit' in the list row nor
+    'Edit Project' on the details page, and no Edit Project dialog is open."""
+    project = cli_ui_world.target
+    listing = ProjectManagementPage(page)
+    listing.navigate_to()
+    listing.should_list_project(project)
+    listing.should_not_offer_edit_action(project)
+
+    ProjectDetailsPage(page).navigate_to(
+        project
+    ).should_show_project_without_edit_project_button()
+    ProjectModal(page).should_not_have_edit_dialog()
+
+
+@AS_OTHER_PROJECT_ADMIN
+def test_admin_of_another_project_cannot_open_edit_project_of_the_target(
+    page, cli_ui_world, own_project
+):
+    """The admin of a different project can edit their own project (positive control) but the
+    target is not listed for them and its page offers no 'Edit Project'."""
+    target = cli_ui_world.target
+    listing = ProjectManagementPage(page)
+    listing.navigate_to()
+    listing.should_list_project(own_project)
+    listing.should_offer_edit_action(own_project)
+    listing.should_not_list_project(target)
+
+    ProjectDetailsPage(page).navigate_to(target).should_not_have_edit_project_button()
+    ProjectModal(page).should_not_have_edit_dialog()
