@@ -51,6 +51,23 @@ class EnforcementConfirmationDialog(BasePage):
         """The Cancel button of the confirmation."""
         return self.dialog.get_by_role("button", name="Cancel", exact=True)
 
+    @property
+    def explanation(self) -> Locator:
+        """The explanation paragraphs of the dialog (the dialog text without its buttons)."""
+        return self.dialog
+
+    @step
+    def confirm(self):
+        """Click the confirm button."""
+        self.confirm_button.click()
+        return self
+
+    @step
+    def cancel(self):
+        """Click Cancel."""
+        self.cancel_button.click()
+        return self
+
     @step
     def press_escape(self):
         """Press the Escape key, then let the browser render two frames so a dialog that the
@@ -93,3 +110,35 @@ class EnforcementConfirmationDialog(BasePage):
         """Verify the confirmation is gone."""
         expect(self.dialog).not_to_be_visible()
         return self
+
+    @step
+    def should_explain_turning_on(self):
+        """Verify the explanation of turning enforcement ON: each member is capped at their own
+        limit and members already over it are blocked right away."""
+        expect(self.dialog).to_contain_text(re.compile(r"capped at their own limit"))
+        expect(self.dialog).to_contain_text(re.compile(r"blocked right away"))
+        expect(self.confirm_button).to_have_text("Turn on enforcement")
+        return self
+
+    @step
+    def should_explain_turning_off(self):
+        """Verify the explanation of turning enforcement OFF: members are no longer capped one
+        by one, the project budget cap still applies, members with a fixed limit stay capped."""
+        expect(self.dialog).to_contain_text(
+            re.compile(r"no longer be capped one by one")
+        )
+        expect(self.dialog).to_contain_text(
+            re.compile(r"project budget cap still applies")
+        )
+        expect(self.dialog).to_contain_text(
+            re.compile(r"their own fixed limit stay capped")
+        )
+        expect(self.confirm_button).to_have_text("Turn off enforcement")
+        return self
+
+    @step
+    def should_explain(self, turning_on: bool):
+        """Verify the explanation that matches the direction of the change."""
+        if turning_on:
+            return self.should_explain_turning_on()
+        return self.should_explain_turning_off()

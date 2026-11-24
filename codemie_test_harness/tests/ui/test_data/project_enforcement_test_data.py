@@ -16,3 +16,5 @@
 
 ORIGINAL_DESCRIPTION = "Original project description"
 DESCRIPTION_SUFFIX = " edited before saving"
+
+ENFORCEMENT_FIELD = "enforce_member_spend_limits"

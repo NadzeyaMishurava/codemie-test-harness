@@ -236,6 +236,38 @@ class ProjectModal(BasePage):
         return self
 
     @step
+    def fail_next_save_request(self, project_name: str):
+        """Make the browser's next project PATCH fail with HTTP 500 and let later ones through.
+
+        Client-side fault injection: the failed request never reaches the backend, so the test
+        can then check that nothing was stored and that a retry reaches the real backend.
+        """
+        self._failing_save_pattern = re.compile(
+            rf"/v1/projects/{re.escape(project_name)}(\?.*)?$"
+        )
+        self._failed_once = False
+
+        def fail_once(route):
+            if route.request.method == "PATCH" and not self._failed_once:
+                self._failed_once = True
+                route.fulfill(
+                    status=500,
+                    content_type="application/json",
+                    body='{"error": {"message": "injected failure"}}',
+                )
+            else:
+                route.continue_()
+
+        self.page.route(self._failing_save_pattern, fail_once)
+        return self
+
+    @step
+    def stop_failing_save_requests(self):
+        """Remove the fault injection set by fail_next_save_request()."""
+        self.page.unroute(self._failing_save_pattern)
+        return self
+
+    @step
     def fill_display_name(self, value: str):
         """Type a value into the Display Name field."""
         self.display_name_input.fill(value)
@@ -426,4 +458,11 @@ class ProjectModal(BasePage):
         """Verify Edit Project is still open and its Save button offered."""
         expect(self.edit_dialog).to_be_visible()
         expect(self.edit_save_button).to_be_visible()
+        return self
+
+    @step
+    def should_not_show_enforcement_switch(self):
+        """Verify the Edit Project dialog is open and does not offer the enforcement switch."""
+        expect(self.edit_dialog).to_be_visible()
+        expect(self.enforce_switch).to_have_count(0)
         return self
