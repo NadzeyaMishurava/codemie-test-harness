@@ -24,33 +24,7 @@ import pytest
 from hamcrest import assert_that, equal_to, is_
 from requests import HTTPError
 
-from codemie_test_harness.tests.utils.client_factory import get_client
-
 pytestmark = [pytest.mark.api, pytest.mark.project]
-
-
-@pytest.fixture
-def enforcement_world(
-    default_project_member, project_admin_user, second_platform_user, user_utils
-):
-    """A project (`target`) and four callers: its admin, its plain member, and the admin of a
-    different project; every client logged in after its role was assigned."""
-    other_project_admin = second_platform_user
-    user_utils.assign_user_to_project(
-        other_project_admin.user_id,
-        default_project_member.project_b,
-        is_project_admin=True,
-    )
-    return {
-        "target": default_project_member.project_a,
-        "project_admin": get_client(
-            username=project_admin_user.email, password=project_admin_user.password
-        ),
-        "member": default_project_member.client,
-        "other_project_admin": get_client(
-            username=other_project_admin.email, password=other_project_admin.password
-        ),
-    }
 
 
 def _stored(project_utils, project_name):
@@ -59,12 +33,12 @@ def _stored(project_utils, project_name):
 
 @pytest.mark.parametrize("new_value", [True, False], ids=["turn on", "turn off"])
 def test_project_admin_changes_enforcement_through_api(
-    enforcement_world, project_utils, new_value
+    roles_world, project_utils, new_value
 ):
-    target = enforcement_world["target"]
+    target = roles_world.target
     project_utils.set_enforce_member_spend_limits(target, not new_value)
 
-    response = enforcement_world["project_admin"].projects.update_project(
+    response = roles_world.clients["project_admin"].projects.update_project(
         project_name=target, enforce_member_spend_limits=new_value
     )
 
@@ -75,13 +49,13 @@ def test_project_admin_changes_enforcement_through_api(
 @pytest.mark.parametrize("caller", ["member", "other_project_admin"])
 @pytest.mark.parametrize("new_value", [True, False], ids=["turn on", "turn off"])
 def test_caller_without_rights_cannot_change_enforcement_through_api(
-    enforcement_world, project_utils, caller, new_value
+    roles_world, project_utils, caller, new_value
 ):
-    target = enforcement_world["target"]
+    target = roles_world.target
     project_utils.set_enforce_member_spend_limits(target, not new_value)
 
     with pytest.raises(HTTPError) as rejected:
-        enforcement_world[caller].projects.update_project(
+        roles_world.clients[caller].projects.update_project(
             project_name=target, enforce_member_spend_limits=new_value
         )
 

@@ -41,6 +41,7 @@ from codemie_test_harness.tests.ui.test_data.project_enforcement_test_data impor
 
 # @case project_enforcement_escape_TC_001
 @pytest.mark.project
+@pytest.mark.budget
 @pytest.mark.ui
 def test_escape_on_enforcement_confirmation_keeps_edit_project_open(
     page, project, project_utils
@@ -95,6 +96,7 @@ def test_escape_on_enforcement_confirmation_keeps_edit_project_open(
 
 # @case project_enforcement_escape_TC_002
 @pytest.mark.project
+@pytest.mark.budget
 @pytest.mark.ui
 def test_escape_while_enforcement_save_is_pending_keeps_edit_project_open(
     page, project, project_utils

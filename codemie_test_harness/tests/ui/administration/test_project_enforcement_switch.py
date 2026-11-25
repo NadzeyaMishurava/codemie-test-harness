@@ -56,6 +56,7 @@ from codemie_test_harness.tests.utils.activity_utils import ActivityUtils
 pytestmark = [
     pytest.mark.ui,
     pytest.mark.project,
+    pytest.mark.budget,
     pytest.mark.oss_standalone,
 ]
 
