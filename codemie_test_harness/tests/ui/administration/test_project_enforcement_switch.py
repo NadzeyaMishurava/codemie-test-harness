@@ -28,8 +28,10 @@ Escape on the confirmation and the in-flight save live in
 test_project_enforcement_confirmation.py. Role-based API rejection lives in
 tests/projects/test_project_enforcement_permissions.py.
 
-Accounts and projects come from the module-scoped `cli_ui_world` fixture
-(tests/ui/administration/conftest.py). Every test first sets the stored state it needs through
+Projects and the maintainer and project-scoped accounts come from the module-scoped
+`cli_ui_world` fixture (tests/ui/administration/conftest.py); the global admin is a fresh
+platform admin that is not a maintainer (`admin_user`), so it reaches the project through the
+admin rule only. Every test first sets the stored state it needs through
 the API as the harness admin; the projects are deleted with the fixture.
 """
 
@@ -59,7 +61,7 @@ from codemie_test_harness.tests.utils.cli_analytics_api_utils import (
     assert_stored_roles,
 )
 
-GLOBAL_ADMIN_ROLE = "cli_global_admin"
+GLOBAL_ADMIN_ROLE = "admin_user"
 GLOBAL_ADMIN = pytest.param(GLOBAL_ADMIN_ROLE, id="global admin")
 MAINTAINER = pytest.param("cli_maintainer", id="maintainer")
 PROJECT_ADMIN = pytest.param("cli_project_admin", id="project admin")
@@ -105,9 +107,10 @@ def _prepare(project_utils, project_name: str, stored: bool):
 
 @pytest.fixture(autouse=True)
 def global_admin_is_not_maintainer(request, user_utils):
-    """For the 'global admin' parameter: prove the harness admin is a global admin and not a
-    maintainer, so the switch reaches it through the admin rule (isAdmin), not the maintainer
-    rule. Otherwise that parameter would silently repeat the maintainer case."""
+    """For the 'global admin' parameter: prove the acting user (a fresh platform admin from the
+    `admin_user` fixture, not a member of the project) is a global admin and not a maintainer,
+    so the switch reaches it through the admin rule (isAdmin), not the maintainer rule.
+    Otherwise that parameter would silently repeat the maintainer case."""
     callspec = getattr(request.node, "callspec", None)
     if callspec is None or callspec.params.get("acting_credentials") != (
         GLOBAL_ADMIN_ROLE

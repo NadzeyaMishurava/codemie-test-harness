@@ -63,6 +63,8 @@ def test_escape_on_enforcement_confirmation_keeps_edit_project_open(
     confirmation = EnforcementConfirmationDialog(page)
 
     management_page.navigate_to()
+    # the table is paged; filter it so the fresh project's row is on the visible page
+    management_page.search_for(created.name)
     management_page.click_edit_project(created.name)
     modal.should_show_enforcement_switch()
     modal.should_have_enforcement_value(stored_enforcement)
@@ -123,6 +125,8 @@ def test_escape_while_enforcement_save_is_pending_keeps_edit_project_open(
     confirmation = EnforcementConfirmationDialog(page)
 
     management_page.navigate_to()
+    # the table is paged; filter it so the fresh project's row is on the visible page
+    management_page.search_for(created.name)
     management_page.click_edit_project(created.name)
     modal.should_show_enforcement_switch()
     modal.should_have_enforcement_value(stored_enforcement)
@@ -203,6 +207,8 @@ def test_escape_closes_edit_project_once_no_confirmation_is_above_it(
     confirmation = EnforcementConfirmationDialog(page)
 
     management_page.navigate_to()
+    # the table is paged; filter it so the fresh project's row is on the visible page
+    management_page.search_for(created.name)
     management_page.click_edit_project(created.name)
     modal.should_show_enforcement_switch()
     modal.append_to_edit_description(DESCRIPTION_SUFFIX)
@@ -229,6 +235,7 @@ def test_escape_closes_edit_project_once_no_confirmation_is_above_it(
         "Escape on Edit Project must not change the stored enforcement setting",
     )
 
+    management_page.search_for(created.name)
     management_page.click_edit_project(created.name)
     modal.should_show_enforcement_switch()
     modal.should_have_enforcement_value(stored_enforcement)
