@@ -164,6 +164,12 @@ def test_escape_while_enforcement_save_is_pending_keeps_edit_project_open(
         equal_to(ORIGINAL_DESCRIPTION),
         "nothing is stored while the save is held",
     )
+    # Checked again after the API read, which outlasts PrimeReact's dialog exit transition:
+    # a dialog that Escape or Cancel started closing would be gone by now.
+    modal.should_remain_open_for_editing()
+    modal.should_have_save_disabled()
+    modal.should_have_enforcement_value(not stored_enforcement)
+    confirmation.should_be_pending()
 
     modal.release_held_save_requests()
 
