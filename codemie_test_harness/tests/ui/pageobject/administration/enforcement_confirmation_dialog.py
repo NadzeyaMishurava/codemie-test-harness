@@ -12,12 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 """Page object for the confirmation shown when Save changes the 'Enforce member spend limits' switch.
 
 Rendered by the Edit Project modal on /settings/administration/projects as a second dialog
 above it. FE source of truth (codemie-ui):
   src/pages/settings/administration/projectsManagement/components/EnforcementConfirmation.tsx
-  src/constants/projectEnforcement.ts (header and button copy)
+    (confirm data-testid 'enforce-confirm', disabled while the confirmed save is in flight;
+    cancel data-testid 'enforce-cancel')
+  src/constants/projectEnforcement.ts (header, explanation and button copy)
 The dialog is a PrimeReact Dialog, so its accessible name is its header text.
 """
 
@@ -27,6 +30,14 @@ from playwright.sync_api import Locator, expect
 from reportportal_client import step
 
 from codemie_test_harness.tests.ui.pageobject.base_page import BasePage
+from codemie_test_harness.tests.ui.test_data.project_enforcement_test_data import (
+    TURN_OFF_BUTTON,
+    TURN_OFF_CLAUSES,
+    TURN_OFF_HEADER,
+    TURN_ON_BUTTON,
+    TURN_ON_CLAUSES,
+    TURN_ON_HEADER,
+)
 
 CONFIRMATION_HEADER = re.compile(r"Turn (on|off) member spend limit enforcement\?")
 
@@ -42,19 +53,15 @@ class EnforcementConfirmationDialog(BasePage):
     @property
     def confirm_button(self) -> Locator:
         """The 'Turn on enforcement' / 'Turn off enforcement' button."""
-        return self.dialog.get_by_role(
-            "button", name=re.compile(r"Turn (on|off) enforcement")
-        )
+        return self.dialog.get_by_test_id("enforce-confirm")
 
     @property
     def cancel_button(self) -> Locator:
         """The Cancel button of the confirmation."""
-        return self.dialog.get_by_role("button", name="Cancel", exact=True)
+        return self.dialog.get_by_test_id("enforce-cancel")
 
-    @property
-    def explanation(self) -> Locator:
-        """The explanation paragraphs of the dialog (the dialog text without its buttons)."""
-        return self.dialog
+    def _dialog_named(self, header: str) -> Locator:
+        return self.page.get_by_role("dialog", name=header, exact=True)
 
     @step
     def confirm(self):
@@ -90,6 +97,28 @@ class EnforcementConfirmationDialog(BasePage):
         return self
 
     @step
+    def double_click_confirm_capturing_save(self, project_name: str):
+        """Double-click the confirm button and wait until the browser has sent the first
+        project PATCH. Whether the second click sends another one is for the caller to count."""
+        with self.page.expect_request(
+            lambda r: r.method == "PATCH" and f"/v1/projects/{project_name}" in r.url,
+            timeout=15000,
+        ):
+            self.confirm_button.dblclick()
+        return self
+
+    @step
+    def click_cancel_while_pending(self):
+        """Click Cancel while the confirmed save is in flight, then let the browser render two
+        frames so a dialog the click closes is gone before any "still open" assertion runs."""
+        self.cancel_button.click()
+        self.page.evaluate(
+            "() => new Promise(resolve => requestAnimationFrame("
+            "() => requestAnimationFrame(resolve)))"
+        )
+        return self
+
+    @step
     def should_be_visible(self):
         """Verify the confirmation is open with Confirm and Cancel offered."""
         expect(self.dialog).to_be_visible()
@@ -111,30 +140,25 @@ class EnforcementConfirmationDialog(BasePage):
         expect(self.dialog).not_to_be_visible()
         return self
 
-    @step
-    def should_explain_turning_on(self):
-        """Verify the explanation of turning enforcement ON: each member is capped at their own
-        limit and members already over it are blocked right away."""
-        expect(self.dialog).to_contain_text(re.compile(r"capped at their own limit"))
-        expect(self.dialog).to_contain_text(re.compile(r"blocked right away"))
-        expect(self.confirm_button).to_have_text("Turn on enforcement")
+    def _should_explain(self, header: str, clauses: tuple, button: str):
+        dialog = self._dialog_named(header)
+        expect(dialog).to_be_visible()
+        for clause in clauses:
+            expect(dialog).to_contain_text(clause)
+        expect(self.confirm_button).to_have_text(button)
         return self
 
     @step
+    def should_explain_turning_on(self):
+        """Verify the header, every explanation clause and the confirm button of turning
+        enforcement ON."""
+        return self._should_explain(TURN_ON_HEADER, TURN_ON_CLAUSES, TURN_ON_BUTTON)
+
+    @step
     def should_explain_turning_off(self):
-        """Verify the explanation of turning enforcement OFF: members are no longer capped one
-        by one, the project budget cap still applies, members with a fixed limit stay capped."""
-        expect(self.dialog).to_contain_text(
-            re.compile(r"no longer be capped one by one")
-        )
-        expect(self.dialog).to_contain_text(
-            re.compile(r"project budget cap still applies")
-        )
-        expect(self.dialog).to_contain_text(
-            re.compile(r"their own fixed limit stay capped")
-        )
-        expect(self.confirm_button).to_have_text("Turn off enforcement")
-        return self
+        """Verify the header, every explanation clause and the confirm button of turning
+        enforcement OFF."""
+        return self._should_explain(TURN_OFF_HEADER, TURN_OFF_CLAUSES, TURN_OFF_BUTTON)
 
     @step
     def should_explain(self, turning_on: bool):

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 """UI + backend regression tests for the 'Enforce member spend limits' switch in Edit Project.
 
 Covers: the switch for the Global Administrator, the Maintainer and the Project Admin of the
@@ -20,8 +21,12 @@ through the real backend and reading it back after reopening the project; Cancel
 without an enforcement change; a failed save followed by a retry; the audit record of the
 acting user.
 
-Escape on the confirmation lives in test_project_enforcement_confirmation.py. Role-based API
-rejection lives in tests/projects/test_project_enforcement_permissions.py.
+Not covered here: that a confirmed change re-applies member limits in LiteLLM. That lives in
+tests/budgets/test_project_member_spend_limits.py (the UI sends the same PATCH).
+
+Escape on the confirmation and the in-flight save live in
+test_project_enforcement_confirmation.py. Role-based API rejection lives in
+tests/projects/test_project_enforcement_permissions.py.
 
 Accounts and projects come from the module-scoped `cli_ui_world` fixture
 (tests/ui/administration/conftest.py). Every test first sets the stored state it needs through
@@ -43,38 +48,32 @@ from codemie_test_harness.tests.ui.pageobject.administration.project_details_pag
 from codemie_test_harness.tests.ui.pageobject.administration.project_management_page import (
     ProjectManagementPage,
 )
-from codemie_test_harness.tests.ui.pageobject.administration.project_modal_page import (
-    ProjectModal,
-)
 from codemie_test_harness.tests.ui.test_data.project_enforcement_test_data import (
     DESCRIPTION_SUFFIX,
     ENFORCEMENT_FIELD,
+    INJECTED_SAVE_FAILURE,
     ORIGINAL_DESCRIPTION,
 )
 from codemie_test_harness.tests.utils.activity_utils import ActivityUtils
+from codemie_test_harness.tests.utils.cli_analytics_api_utils import (
+    assert_stored_roles,
+)
 
-pytestmark = [
-    pytest.mark.ui,
-    pytest.mark.project,
-    pytest.mark.budget,
-    pytest.mark.oss_standalone,
-]
-
-GLOBAL_ADMIN = pytest.param("cli_global_admin", id="global admin")
+GLOBAL_ADMIN_ROLE = "cli_global_admin"
+GLOBAL_ADMIN = pytest.param(GLOBAL_ADMIN_ROLE, id="global admin")
 MAINTAINER = pytest.param("cli_maintainer", id="maintainer")
 PROJECT_ADMIN = pytest.param("cli_project_admin", id="project admin")
 
 STORED_OFF = pytest.param(False, id="off to on")
 STORED_ON = pytest.param(True, id="on to off")
+STORED_OFF_UNCHANGED = pytest.param(False, id="stored off")
+STORED_ON_UNCHANGED = pytest.param(True, id="stored on")
 
 AS_ANY_ENFORCER = pytest.mark.parametrize(
     "acting_credentials", [GLOBAL_ADMIN, MAINTAINER, PROJECT_ADMIN], indirect=True
 )
 AS_GLOBAL_OR_PROJECT_ADMIN = pytest.mark.parametrize(
     "acting_credentials", [GLOBAL_ADMIN, PROJECT_ADMIN], indirect=True
-)
-AS_PROJECT_ADMIN = pytest.mark.parametrize(
-    "acting_credentials", [PROJECT_ADMIN], indirect=True
 )
 AS_MEMBER = pytest.mark.parametrize(
     "acting_credentials", [pytest.param("cli_member", id="member")], indirect=True
@@ -104,6 +103,20 @@ def _prepare(project_utils, project_name: str, stored: bool):
     )
 
 
+@pytest.fixture(autouse=True)
+def global_admin_is_not_maintainer(request, user_utils):
+    """For the 'global admin' parameter: prove the harness admin is a global admin and not a
+    maintainer, so the switch reaches it through the admin rule (isAdmin), not the maintainer
+    rule. Otherwise that parameter would silently repeat the maintainer case."""
+    callspec = getattr(request.node, "callspec", None)
+    if callspec is None or callspec.params.get("acting_credentials") != (
+        GLOBAL_ADMIN_ROLE
+    ):
+        return
+    user_id = request.getfixturevalue("acting_credentials")[2]
+    assert_stored_roles(user_utils, user_id, is_admin=True, is_maintainer=False)
+
+
 @pytest.fixture
 def trail_instance_id(cli_ui_world, project_utils) -> str:
     """The id the project's activity trail is addressed by; the test is skipped on a backend
@@ -121,14 +134,19 @@ def trail_instance_id(cli_ui_world, project_utils) -> str:
 # ── Confirmed change is stored and survives reopening ───────────────────────────────
 
 
+# @case project-admin-enforcement-switch-confirmation_TC_001
 @AS_ANY_ENFORCER
 @pytest.mark.parametrize("stored", [STORED_OFF, STORED_ON])
+@pytest.mark.oss_standalone
+@pytest.mark.project
+@pytest.mark.budget
+@pytest.mark.ui
 def test_confirmed_enforcement_change_is_stored_and_survives_reopen(
     page, cli_ui_world, project_utils, stored
 ):
-    """The switch is offered and enabled, the explanation matches the direction, nothing is
-    stored until Confirm, and after Confirm the backend and a reopened Edit Project show the
-    new value."""
+    """The switch is offered and enabled, the explanation matches the direction (header,
+    every clause, confirm button), nothing is stored until Confirm, and after Confirm the
+    backend and a reopened Edit Project show the new value."""
     project = cli_ui_world.target
     _prepare(project_utils, project, stored)
     details = ProjectDetailsPage(page).navigate_to(project)
@@ -165,19 +183,26 @@ def test_confirmed_enforcement_change_is_stored_and_survives_reopen(
 # ── Audit: the acting user is recorded ─────────────────────────────────────────────
 
 
-@AS_PROJECT_ADMIN
-def test_project_admin_change_is_audited_with_the_acting_user(
+# @case project-admin-enforcement-switch-confirmation_TC_002
+@AS_GLOBAL_OR_PROJECT_ADMIN
+@pytest.mark.oss_standalone
+@pytest.mark.project
+@pytest.mark.budget
+@pytest.mark.ui
+def test_confirmed_change_is_audited_with_the_acting_user(
     page,
     cli_ui_world,
     project_utils,
+    user_utils,
     maintainer_client,
     trail_instance_id,
     acting_credentials,
 ):
-    """A change a project admin confirms in the UI leaves one enforcement event that names
-    the new value and the project admin as actor."""
+    """A change a project admin or a global admin confirms in the UI leaves one enforcement
+    event that names the previous and the new value and the acting user (id and e-mail)."""
     project = cli_ui_world.target
     actor_id = acting_credentials[2]
+    actor_email = user_utils.get_admin_user(actor_id).email
     _prepare(project_utils, project, False)
     activity = ActivityUtils(maintainer_client)
     events_before = activity.list_all_project_events(
@@ -209,20 +234,28 @@ def test_project_admin_change_is_audited_with_the_acting_user(
         ),
         "the event records the previous and the new value",
     )
-    assert_that(events[0].actor_id, equal_to(actor_id), "the acting user is recorded")
+    assert_that(events[0].actor_id, equal_to(actor_id), "the acting user's id")
+    assert_that(
+        events[0].actor_email, equal_to(actor_email), "the acting user's e-mail"
+    )
 
 
 # ── Cancel ─────────────────────────────────────────────────────────────────────────
 
 
+# @case project-admin-enforcement-switch-confirmation_TC_004
 @AS_GLOBAL_OR_PROJECT_ADMIN
 @pytest.mark.parametrize("stored", [STORED_OFF, STORED_ON])
+@pytest.mark.oss_standalone
+@pytest.mark.project
+@pytest.mark.budget
+@pytest.mark.ui
 def test_cancel_stores_nothing_and_keeps_the_other_edits(
     page, cli_ui_world, project_utils, stored
 ):
-    """Cancel closes only the explanation: the switch returns to its stored value, the form and
-    the unrelated edit stay, nothing is stored; saving again then stores only the other edit
-    and asks nothing."""
+    """Cancel closes only the explanation and sends no request: the switch returns to its
+    stored value, the form and the unrelated edit stay, nothing is stored; saving again then
+    goes straight to the backend, stores only the other edit and asks nothing."""
     project = cli_ui_world.target
     edited = ORIGINAL_DESCRIPTION + DESCRIPTION_SUFFIX
     _prepare(project_utils, project, stored)
@@ -232,6 +265,7 @@ def test_cancel_stores_nothing_and_keeps_the_other_edits(
     modal.should_show_enforcement_switch()
     modal.append_to_edit_description(DESCRIPTION_SUFFIX)
     modal.toggle_enforcement()
+    modal.start_counting_save_requests(project)
     modal.click_save_to_confirm_enforcement()
     confirmation.should_be_visible()
     confirmation.cancel()
@@ -247,8 +281,13 @@ def test_cancel_stores_nothing_and_keeps_the_other_edits(
     assert_that(
         getattr(detail, ENFORCEMENT_FIELD), is_(stored), "Cancel keeps the setting"
     )
+    assert_that(
+        modal.stop_counting_save_requests(),
+        equal_to(0),
+        "neither the Save that opened the confirmation nor Cancel sends a project PATCH",
+    )
 
-    request_body = modal.save_capturing_request(project)
+    request_body = modal.save_edit_capturing_request(project)
     modal.should_show_project_updated_toast(project)
     confirmation.should_be_closed()
     assert_that(
@@ -266,34 +305,54 @@ def test_cancel_stores_nothing_and_keeps_the_other_edits(
 # ── Save without an enforcement change ─────────────────────────────────────────────
 
 
+# @case project-admin-enforcement-switch-confirmation_TC_008
 @AS_ANY_ENFORCER
+@pytest.mark.parametrize("stored", [STORED_OFF_UNCHANGED, STORED_ON_UNCHANGED])
+@pytest.mark.oss_standalone
+@pytest.mark.project
+@pytest.mark.budget
+@pytest.mark.ui
 def test_save_without_enforcement_change_asks_no_confirmation(
-    page, cli_ui_world, project_utils
+    page, cli_ui_world, project_utils, stored
 ):
-    """Saving another edit with the switch untouched shows no explanation and stores the edit
-    without changing enforcement."""
+    """Saving another edit with the switch untouched shows no explanation: Save itself sends
+    the project PATCH (a confirmation would hold it back), with the stored enforcement value,
+    and the edit is stored without changing enforcement."""
     project = cli_ui_world.target
     edited = ORIGINAL_DESCRIPTION + DESCRIPTION_SUFFIX
-    _prepare(project_utils, project, False)
+    _prepare(project_utils, project, stored)
     modal = ProjectDetailsPage(page).navigate_to(project).open_edit_project()
     confirmation = EnforcementConfirmationDialog(page)
 
     modal.should_show_enforcement_switch()
     modal.append_to_edit_description(DESCRIPTION_SUFFIX)
-    modal.click_save_to_confirm_enforcement()
+    request_body = modal.save_edit_capturing_request(project)
 
     modal.should_show_project_updated_toast(project)
     confirmation.should_be_closed()
+    assert_that(
+        request_body[ENFORCEMENT_FIELD],
+        is_(stored),
+        "the save sends the stored enforcement value",
+    )
     detail = project_utils.get_project_detail(project)
     assert_that(detail.description, equal_to(edited), "the edit is stored")
-    assert_that(getattr(detail, ENFORCEMENT_FIELD), is_(False), "enforcement unchanged")
+    assert_that(
+        getattr(detail, ENFORCEMENT_FIELD), is_(stored), "enforcement unchanged"
+    )
 
 
+# @case project-admin-enforcement-switch-confirmation_TC_008
 @AS_GLOBAL_ADMIN
+@pytest.mark.oss_standalone
+@pytest.mark.project
+@pytest.mark.budget
+@pytest.mark.ui
 def test_toggling_back_to_the_stored_value_asks_no_confirmation(
     page, cli_ui_world, project_utils
 ):
-    """A switch flipped twice is back at its stored value: saving asks nothing."""
+    """A switch flipped twice is back at its stored value: Save itself sends the project
+    PATCH with the stored value and asks nothing."""
     project = cli_ui_world.target
     edited = ORIGINAL_DESCRIPTION + DESCRIPTION_SUFFIX
     _prepare(project_utils, project, True)
@@ -305,10 +364,15 @@ def test_toggling_back_to_the_stored_value_asks_no_confirmation(
     modal.toggle_enforcement()
     modal.should_have_enforcement_value(True)
     modal.append_to_edit_description(DESCRIPTION_SUFFIX)
-    modal.click_save_to_confirm_enforcement()
+    request_body = modal.save_edit_capturing_request(project)
 
     modal.should_show_project_updated_toast(project)
     confirmation.should_be_closed()
+    assert_that(
+        request_body[ENFORCEMENT_FIELD],
+        is_(True),
+        "the save sends the stored enforcement value",
+    )
     detail = project_utils.get_project_detail(project)
     assert_that(detail.description, equal_to(edited), "the edit is stored")
     assert_that(getattr(detail, ENFORCEMENT_FIELD), is_(True), "enforcement unchanged")
@@ -317,13 +381,19 @@ def test_toggling_back_to_the_stored_value_asks_no_confirmation(
 # ── Failed save and retry ──────────────────────────────────────────────────────────
 
 
+# @case project-admin-enforcement-switch-confirmation_TC_007
 @AS_GLOBAL_ADMIN
+@pytest.mark.oss_standalone
+@pytest.mark.project
+@pytest.mark.budget
+@pytest.mark.ui
 def test_failed_confirmed_save_stores_nothing_and_retry_asks_again(
     page, cli_ui_world, project_utils
 ):
     """When the confirmed save fails (the browser's request is answered with HTTP 500 before
-    it reaches the backend), nothing is stored, Edit Project stays open with the switch as the
-    user set it and a new Save asks again; confirming then stores the change."""
+    it reaches the backend), the user is shown the error, nothing is stored, Edit Project stays
+    open with the switch as the user set it and a new Save asks again; confirming then stores
+    the change."""
     project = cli_ui_world.target
     _prepare(project_utils, project, False)
     modal = ProjectDetailsPage(page).navigate_to(project).open_edit_project()
@@ -333,9 +403,10 @@ def test_failed_confirmed_save_stores_nothing_and_retry_asks_again(
     modal.toggle_enforcement()
     modal.click_save_to_confirm_enforcement()
     confirmation.should_be_visible()
-    modal.fail_next_save_request(project)
+    modal.fail_next_save_request(project, INJECTED_SAVE_FAILURE)
     confirmation.confirm()
 
+    modal.should_show_save_error(INJECTED_SAVE_FAILURE)
     confirmation.should_be_closed()
     modal.should_remain_open_for_editing()
     modal.should_have_enforcement_value(True)
@@ -350,7 +421,6 @@ def test_failed_confirmed_save_stores_nothing_and_retry_asks_again(
     confirmation.should_explain_turning_on()
     confirmation.confirm()
     modal.should_show_project_updated_toast(project)
-    modal.stop_failing_save_requests()
     assert_that(
         _enforcement(project_utils, project), is_(True), "the retry stores the change"
     )
@@ -362,10 +432,15 @@ def test_failed_confirmed_save_stores_nothing_and_retry_asks_again(
 # the dialog open.
 
 
+# @case project-admin-enforcement-switch-confirmation_TC_013
 @AS_MEMBER
+@pytest.mark.oss_standalone
+@pytest.mark.project
+@pytest.mark.budget
+@pytest.mark.ui
 def test_project_member_cannot_open_edit_project(page, cli_ui_world):
     """A plain member sees the project but is offered neither 'Edit' in the list row nor
-    'Edit Project' on the details page, and no Edit Project dialog is open."""
+    'Edit Project' on the details page."""
     project = cli_ui_world.target
     listing = ProjectManagementPage(page)
     listing.navigate_to()
@@ -375,15 +450,20 @@ def test_project_member_cannot_open_edit_project(page, cli_ui_world):
     ProjectDetailsPage(page).navigate_to(
         project
     ).should_show_project_without_edit_project_button()
-    ProjectModal(page).should_not_have_edit_dialog()
 
 
+# @case project-admin-enforcement-switch-confirmation_TC_013
 @AS_OTHER_PROJECT_ADMIN
+@pytest.mark.oss_standalone
+@pytest.mark.project
+@pytest.mark.budget
+@pytest.mark.ui
 def test_admin_of_another_project_cannot_open_edit_project_of_the_target(
     page, cli_ui_world, own_project
 ):
     """The admin of a different project can edit their own project (positive control) but the
-    target is not listed for them and its page offers no 'Edit Project'."""
+    target is not listed for them, and opening its page directly shows 'Project not found'
+    with no 'Edit Project'."""
     target = cli_ui_world.target
     listing = ProjectManagementPage(page)
     listing.navigate_to()
@@ -391,5 +471,6 @@ def test_admin_of_another_project_cannot_open_edit_project_of_the_target(
     listing.should_offer_edit_action(own_project)
     listing.should_not_list_project(target)
 
-    ProjectDetailsPage(page).navigate_to(target).should_not_have_edit_project_button()
-    ProjectModal(page).should_not_have_edit_dialog()
+    ProjectDetailsPage(page).navigate_to(
+        target
+    ).should_show_project_not_found_without_edit_project_button()

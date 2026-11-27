@@ -17,6 +17,7 @@
 Used on /settings/administration/projects.
 """
 
+import json
 import re
 
 from playwright.sync_api import Locator, expect
@@ -180,6 +181,54 @@ class ProjectModal(BasePage):
         return request_info.value.post_data_json
 
     @step
+    def save_edit_capturing_request(self, project_name: str) -> dict:
+        """Click Save in the Edit Project dialog and return the JSON body of the
+        PATCH /v1/projects/<name> it sends. The click is scoped to Edit Project, so a
+        confirmation still fading out above it cannot make the locator ambiguous."""
+        with self.page.expect_request(
+            lambda r: r.method == "PATCH" and f"/v1/projects/{project_name}" in r.url,
+            timeout=15000,
+        ) as request_info:
+            self.edit_save_button.click()
+        return request_info.value.post_data_json
+
+    @step
+    def start_counting_save_requests(self, project_name: str):
+        """Count every project PATCH the browser sends from now on (held or not)."""
+        pattern = re.compile(rf"/v1/projects/{re.escape(project_name)}(\?.*)?$")
+        self._counted_saves = []
+
+        def count(request):
+            if request.method == "PATCH" and pattern.search(request.url):
+                self._counted_saves.append(request.url)
+
+        self._save_counter = count
+        self.page.on("request", count)
+        return self
+
+    @property
+    def sent_save_count(self) -> int:
+        """How many project PATCHes the browser sent since start_counting_save_requests()."""
+        return len(self._counted_saves)
+
+    @step
+    def stop_counting_save_requests(self) -> int:
+        """Stop counting and return how many project PATCHes were sent."""
+        self.page.remove_listener("request", self._save_counter)
+        return self.sent_save_count
+
+    @step
+    def press_escape(self):
+        """Press the Escape key, then let the browser render two frames so a dialog that the
+        key closes is gone before any assertion runs."""
+        self.page.keyboard.press("Escape")
+        self.page.evaluate(
+            "() => new Promise(resolve => requestAnimationFrame("
+            "() => requestAnimationFrame(resolve)))"
+        )
+        return self
+
+    @step
     def toggle_cli_analytics(self):
         """Click the switch's label (the input itself is visually hidden)."""
         self.enable_ai_attribution_label_text.click()
@@ -236,11 +285,13 @@ class ProjectModal(BasePage):
         return self
 
     @step
-    def fail_next_save_request(self, project_name: str):
-        """Make the browser's next project PATCH fail with HTTP 500 and let later ones through.
+    def fail_next_save_request(self, project_name: str, message: str):
+        """Make the browser's next project PATCH fail with HTTP 500 carrying `message` and let
+        every later request through.
 
         Client-side fault injection: the failed request never reaches the backend, so the test
-        can then check that nothing was stored and that a retry reaches the real backend.
+        can then check that nothing was stored and that a retry reaches the real backend. The
+        route lives as long as the page; after the one failure it only passes requests on.
         """
         self._failing_save_pattern = re.compile(
             rf"/v1/projects/{re.escape(project_name)}(\?.*)?$"
@@ -253,18 +304,12 @@ class ProjectModal(BasePage):
                 route.fulfill(
                     status=500,
                     content_type="application/json",
-                    body='{"error": {"message": "injected failure"}}',
+                    body=json.dumps({"error": {"message": message}}),
                 )
             else:
                 route.continue_()
 
         self.page.route(self._failing_save_pattern, fail_once)
-        return self
-
-    @step
-    def stop_failing_save_requests(self):
-        """Remove the fault injection set by fail_next_save_request()."""
-        self.page.unroute(self._failing_save_pattern)
         return self
 
     @step
@@ -461,6 +506,19 @@ class ProjectModal(BasePage):
         return self
 
     @step
+    def should_have_save_disabled(self):
+        """Verify Edit Project is open and its Save button is disabled."""
+        expect(self.edit_dialog).to_be_visible()
+        expect(self.edit_save_button).to_be_disabled()
+        return self
+
+    @step
+    def should_show_save_error(self, message: str):
+        """Verify an error toast tells the user the save failed, with the backend's message."""
+        self.toast.should_show_error_text(message)
+        return self
+
+    @step
     def should_not_show_enforcement_switch(self):
         """Verify the Edit Project dialog is open and does not offer the enforcement switch."""
         expect(self.edit_dialog).to_be_visible()
@@ -469,6 +527,8 @@ class ProjectModal(BasePage):
 
     @step
     def should_not_have_edit_dialog(self):
-        """Verify no Edit Project dialog is open (nor, therefore, an enforcement switch)."""
+        """Verify no Edit Project dialog is open (nor, therefore, an enforcement switch).
+
+        Meaningful only after the dialog was open, or after an action that would open it."""
         expect(self.edit_dialog).to_have_count(0)
         return self

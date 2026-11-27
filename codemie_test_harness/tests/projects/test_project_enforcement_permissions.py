@@ -12,26 +12,33 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 """Who may change 'enforce_member_spend_limits' through the API.
 
 The Project Admin of a project may change it (the Edit Project screen relies on that); a plain
-member of the project and the admin of a different project may not: the call is rejected with 403 and
-the stored value stays as it was. Needs a stand with real roles (not ENV=local, where every
-user is a global admin).
+member of the project, the admin of a different project and a user unrelated to the project may
+not: the call is rejected with 403 'Access denied' and the stored value stays as it was. Needs a
+stand with real roles (not ENV=local, where every user is a global admin).
 """
 
 import pytest
 from hamcrest import assert_that, equal_to, is_
 from requests import HTTPError
 
-pytestmark = [pytest.mark.api, pytest.mark.project]
+from codemie_test_harness.tests.ui.test_data.project_enforcement_test_data import (
+    ACCESS_DENIED_MESSAGE,
+)
 
 
 def _stored(project_utils, project_name):
     return project_utils.get_project_detail(project_name).enforce_member_spend_limits
 
 
+# @case project-admin-enforcement-switch-confirmation_TC_012
 @pytest.mark.parametrize("new_value", [True, False], ids=["turn on", "turn off"])
+@pytest.mark.project
+@pytest.mark.budget
+@pytest.mark.api
 def test_project_admin_changes_enforcement_through_api(
     roles_world, project_utils, new_value
 ):
@@ -46,8 +53,12 @@ def test_project_admin_changes_enforcement_through_api(
     assert_that(_stored(project_utils, target), is_(new_value), "stored value")
 
 
-@pytest.mark.parametrize("caller", ["member", "other_project_admin"])
+# @case project-admin-enforcement-switch-confirmation_TC_012
+@pytest.mark.parametrize("caller", ["member", "other_project_admin", "unrelated_user"])
 @pytest.mark.parametrize("new_value", [True, False], ids=["turn on", "turn off"])
+@pytest.mark.project
+@pytest.mark.budget
+@pytest.mark.api
 def test_caller_without_rights_cannot_change_enforcement_through_api(
     roles_world, project_utils, caller, new_value
 ):
@@ -63,6 +74,11 @@ def test_caller_without_rights_cannot_change_enforcement_through_api(
         rejected.value.response.status_code,
         equal_to(403),
         "the change is rejected with a permission error",
+    )
+    assert_that(
+        rejected.value.response.json()["error"]["message"],
+        equal_to(ACCESS_DENIED_MESSAGE),
+        "the rejection names the missing access",
     )
     assert_that(
         _stored(project_utils, target), is_(not new_value), "nothing was changed"
